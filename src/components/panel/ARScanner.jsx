@@ -9,18 +9,46 @@ import {
   Typography,
   TextField,
   Alert,
-  CircularProgress
+  CircularProgress,
+  LinearProgress,
+  Stepper,
+  Step,
+  StepLabel,
+  Paper,
+  Chip
 } from '@mui/material';
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+import StopIcon from '@mui/icons-material/Stop';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import RotateRightIcon from '@mui/icons-material/RotateRight';
+
+const RECORDING_STEPS = [
+  'Kamera Hazırla',
+  'Video Kaydet',
+  'İncele',
+  'Bilgi Gir',
+  'İşleniyor'
+];
 
 function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  const previewRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
+
   const [stream, setStream] = useState(null);
-  const [capturedImage, setCapturedImage] = useState(null);
-  const [step, setStep] = useState(1); // 1: Kamera, 2: Bilgi formu, 3: Yükleniyor
+  const [activeStep, setActiveStep] = useState(0);
   const [error, setError] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [recordedVideo, setRecordedVideo] = useState(null);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [processing, setProcessing] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [cameraPermission, setCameraPermission] = useState(null); // 'granted', 'denied', 'prompt'
+  const [cameraLoading, setCameraLoading] = useState(false);
+
   const [modelData, setModelData] = useState({
     name: '',
     description: '',
@@ -29,20 +57,69 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
 
   // Kamera başlat
   const startCamera = async () => {
+    setCameraLoading(true);
+    setError('');
+    
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' } // Arka kamera (mobilde)
-      });
+      // Tarayıcı desteği kontrolü
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('BROWSER_NOT_SUPPORTED');
+      }
+
+      // Kamera izni iste
+      console.log('🎥 Kamera izni isteniyor...');
       
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment', // Arka kamera
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      console.log('✅ Kamera izni alındı');
+
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
+        
+        // Video'yu başlat
+        try {
+          await videoRef.current.play();
+          console.log('✅ Video stream başladı');
+        } catch (playError) {
+          console.error('Video play error:', playError);
+          // Tekrar dene
+          setTimeout(() => {
+            if (videoRef.current) {
+              videoRef.current.play();
+            }
+          }, 100);
+        }
       }
-      
+
       setStream(mediaStream);
+      setCameraPermission('granted');
       setError('');
+      setActiveStep(0);
+      
     } catch (err) {
-      setError('Kamera erişimi reddedildi. Lütfen tarayıcı izinlerini kontrol edin.');
+      setCameraPermission('denied');
       console.error('Kamera hatası:', err);
+      
+      if (err.message === 'BROWSER_NOT_SUPPORTED') {
+        setError('Tarayıcınız kamera kullanımını desteklemiyor. Lütfen güncel Chrome kullanın.');
+      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Kamera erişimi reddedildi. Lütfen tarayıcı adres çubuğundaki kamera simgesine tıklayıp izin verin.');
+      } else if (err.name === 'NotFoundError') {
+        setError('Kamera bulunamadı. Lütfen cihazınızda kamera olduğundan emin olun.');
+      } else if (err.name === 'NotReadableError') {
+        setError('Kamera kullanımda. Lütfen diğer sekmeleri/uygulamaları kapatın.');
+      } else {
+        setError('Kamera başlatılamadı: ' + err.message);
+      }
+    } finally {
+      setCameraLoading(false);
     }
   };
 
@@ -54,44 +131,88 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
     }
   };
 
+  // Video kaydı başlat
+  const startRecording = () => {
+    if (!stream) return;
+
+    chunksRef.current = [];
+    
+    const mediaRecorder = new MediaRecorder(stream, {
+      mimeType: 'video/webm;codecs=vp9'
+    });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunksRef.current.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+      const videoUrl = URL.createObjectURL(blob);
+      setRecordedVideo({ blob, url: videoUrl });
+      setActiveStep(2); // İncele adımına geç
+    };
+
+    mediaRecorderRef.current = mediaRecorder;
+    mediaRecorder.start();
+    setRecording(true);
+    setActiveStep(1);
+    
+    // Kayıt süresini başlat
+    setRecordingTime(0);
+  };
+
+  // Video kaydı durdur
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
+      setRecording(false);
+      stopCamera();
+    }
+  };
+
+  // Tekrar kaydet
+  const retakeVideo = () => {
+    setRecordedVideo(null);
+    setRecordingTime(0);
+    setActiveStep(0);
+    startCamera();
+  };
+
+  // Videoyu onayla
+  const approveVideo = () => {
+    setActiveStep(3); // Bilgi girişi adımına geç
+  };
+
+  // Kayıt süresi sayacı
+  useEffect(() => {
+    let interval;
+    if (recording) {
+      interval = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [recording]);
+
   // Dialog açıldığında kamerayı başlat
   useEffect(() => {
     if (open) {
-      startCamera();
+      // Kamera otomatik açılmıyor, kullanıcı manuel açacak
+      setCameraPermission('prompt');
     } else {
       stopCamera();
-      setCapturedImage(null);
-      setStep(1);
+      setRecordedVideo(null);
+      setActiveStep(0);
+      setRecordingTime(0);
       setModelData({ name: '', description: '', category: '' });
+      setError('');
+      setCameraPermission(null);
     }
 
     return () => stopCamera();
   }, [open]);
-
-  // Fotoğraf çek
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    if (video && canvas) {
-      const context = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0);
-      
-      const imageData = canvas.toDataURL('image/jpeg');
-      setCapturedImage(imageData);
-      stopCamera();
-      setStep(2);
-    }
-  };
-
-  // Tekrar çek
-  const retakePhoto = () => {
-    setCapturedImage(null);
-    setStep(1);
-    startCamera();
-  };
 
   // Form değişikliklerini handle et
   const handleInputChange = (e) => {
@@ -101,101 +222,291 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
     });
   };
 
-  // 3D Model oluştur ve yükle
+  // Süreyi formatla (00:00)
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Video ve model bilgilerini yükle
   const handleUpload = async () => {
     if (!modelData.name) {
       setError('Lütfen model adı girin');
       return;
     }
 
-    setStep(3);
+    if (!recordedVideo) {
+      setError('Video kaydı bulunamadı');
+      return;
+    }
+
+    setActiveStep(4);
+    setProcessing(true);
     setError('');
 
     try {
-      // TODO: Gerçek 3D model oluşturma ve upload
-      // Şimdilik simüle ediyoruz
+      // FormData oluştur
+      const formData = new FormData();
+      formData.append('video', recordedVideo.blob, 'scan-video.webm');
+      formData.append('restaurantId', restaurantId);
+      formData.append('name', modelData.name);
+      formData.append('description', modelData.description);
+      formData.append('category', modelData.category);
+
+      console.log('📤 Video backend\'e gönderiliyor...');
+
+      // Backend'e gönder - GERÇEK API ÇAĞRISI
+      const response = await fetch('http://172.20.10.2:5000/api/models/from-video', {
+        method: 'POST',
+        body: formData,
+        // Content-Type otomatik olarak multipart/form-data olur
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Upload başarısız');
+      }
+
+      const result = await response.json();
       
-      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 saniye bekle
-      
-      alert('✅ 3D Model başarıyla oluşturuldu!\n\n(Gerçek AR tarama özelliği yakında eklenecek)');
-      
+      console.log('✅ Upload başarılı:', result);
+
+      // Başarılı
       onModelAdded();
       onClose();
       
     } catch (err) {
-      setError('Model yüklenirken hata oluştu');
-      setStep(2);
+      console.error('❌ Upload hatası:', err);
+      setError('Model yüklenirken hata oluştu: ' + err.message);
+      setActiveStep(3);
+    } finally {
+      setProcessing(false);
     }
   };
+
+  // ESKI SIMÜLASYON FONKSİYONU KALDIRILDI
+  // const simulateUpload = (formData) => { ... }
 
   return (
     <Dialog 
       open={open} 
-      onClose={onClose} 
+      onClose={!processing ? onClose : undefined}
       maxWidth="md" 
       fullWidth
+      disableEscapeKeyDown={processing}
     >
       <DialogTitle>
         📸 AR 3D Model Tarama
       </DialogTitle>
 
       <DialogContent>
+        {/* Progress Stepper */}
+        <Stepper activeStep={activeStep} sx={{ mb: 3 }}>
+          {RECORDING_STEPS.map((label) => (
+            <Step key={label}>
+              <StepLabel>{label}</StepLabel>
+            </Step>
+          ))}
+        </Stepper>
+
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
             {error}
           </Alert>
         )}
 
-        {/* ADIM 1: Kamera */}
-        {step === 1 && (
+        {/* ADIM 0-1: Kamera & Kayıt */}
+        {(activeStep === 0 || activeStep === 1) && (
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Taramak istediğiniz ürünü kamera önüne koyun ve fotoğrafını çekin
-            </Typography>
-            
-            {capturedImage ? (
-              <Box sx={{ textAlign: 'center' }}>
-                <img 
-                  src={capturedImage} 
-                  alt="Captured" 
-                  style={{ width: '100%', maxHeight: 400, objectFit: 'contain' }}
-                />
-              </Box>
-            ) : (
-              <Box sx={{ 
-                position: 'relative',
-                width: '100%',
-                height: 400,
-                backgroundColor: '#000',
-                borderRadius: 2,
-                overflow: 'hidden'
-              }}>
+            {/* Kamera İzin Ekranı */}
+            {cameraPermission === 'prompt' && !stream && (
+              <Paper
+                elevation={3}
+                sx={{
+                  width: '100%',
+                  height: 400,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: '#f5f5f5',
+                  borderRadius: 2,
+                  mb: 2,
+                  textAlign: 'center',
+                  p: 4
+                }}
+              >
+                <CameraAltIcon sx={{ fontSize: 100, color: 'primary.main', mb: 3 }} />
+                <Typography variant="h5" gutterBottom>
+                  Kamera Erişimi Gerekli
+                </Typography>
+                <Typography variant="body1" color="text.secondary" sx={{ mb: 3, maxWidth: 400 }}>
+                  3D model taraması için kameranıza erişmemiz gerekiyor. 
+                  Lütfen tarayıcınızın izin isteğini onaylayın.
+                </Typography>
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<CameraAltIcon />}
+                  onClick={startCamera}
+                  disabled={cameraLoading}
+                >
+                  {cameraLoading ? 'Kamera Açılıyor...' : 'Kamerayı Aç'}
+                </Button>
+              </Paper>
+            )}
+
+            {/* Kamera Aktif */}
+            {stream && (
+              <Paper 
+                elevation={3}
+                sx={{ 
+                  position: 'relative',
+                  width: '100%',
+                  height: 400,
+                  backgroundColor: '#000',
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  mb: 2
+                }}
+              >
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  muted
+                  style={{ 
+                    width: '100%', 
+                    height: '100%', 
+                    objectFit: 'cover'
+                  }}
                 />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
-              </Box>
+
+                {/* Kamera test göstergesi */}
+                {!recording && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 20,
+                      right: 20,
+                      backgroundColor: 'rgba(76, 175, 80, 0.9)',
+                      color: 'white',
+                      px: 2,
+                      py: 0.5,
+                      borderRadius: 1,
+                      fontSize: '0.75rem'
+                    }}
+                  >
+                    ● CANLI
+                  </Box>
+                )}
+
+                {/* Kayıt göstergesi */}
+                {recording && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 20,
+                      left: 20,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      backgroundColor: 'rgba(244, 67, 54, 0.9)',
+                      color: 'white',
+                      px: 2,
+                      py: 1,
+                      borderRadius: 2
+                    }}
+                  >
+                    <FiberManualRecordIcon sx={{ animation: 'blink 1s infinite' }} />
+                    <Typography variant="h6" fontWeight={600}>
+                      {formatTime(recordingTime)}
+                    </Typography>
+                  </Box>
+                )}
+
+                {/* Tarama rehberi */}
+                {recording && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      bottom: 20,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                      color: 'white',
+                      px: 3,
+                      py: 2,
+                      borderRadius: 2,
+                      textAlign: 'center'
+                    }}
+                  >
+                    <RotateRightIcon sx={{ fontSize: 40, mb: 1 }} />
+                    <Typography variant="body1" fontWeight={600}>
+                      Nesneyi 360° Çevirin
+                    </Typography>
+                    <Typography variant="caption">
+                      Her açıdan görüntü alın • Yavaşça döndürün
+                    </Typography>
+                  </Box>
+                )}
+              </Paper>
+            )}
+
+            {!recording && stream && (
+              <Alert severity="info">
+                <strong>Tarama İpuçları:</strong>
+                <br />
+                • Nesneyi düz bir yüzeye koyun
+                <br />
+                • İyi ışıklandırılmış bir ortam seçin
+                <br />
+                • Nesnenin etrafında yavaşça dönün
+                <br />
+                • En az 10-15 saniye video çekin
+              </Alert>
             )}
           </Box>
         )}
 
-        {/* ADIM 2: Model Bilgileri */}
-        {step === 2 && (
+        {/* ADIM 2: Video İnceleme */}
+        {activeStep === 2 && recordedVideo && (
           <Box>
-            <Box sx={{ textAlign: 'center', mb: 3 }}>
-              <img 
-                src={capturedImage} 
-                alt="Captured" 
-                style={{ width: '100%', maxHeight: 200, objectFit: 'contain', borderRadius: 8 }}
+            <Paper 
+              elevation={3}
+              sx={{ 
+                width: '100%',
+                height: 400,
+                backgroundColor: '#000',
+                borderRadius: 2,
+                overflow: 'hidden',
+                mb: 2
+              }}
+            >
+              <video
+                src={recordedVideo.url}
+                controls
+                style={{ 
+                  width: '100%', 
+                  height: '100%', 
+                  objectFit: 'contain' 
+                }}
               />
-            </Box>
+            </Paper>
 
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            <Alert severity="success" icon={<CheckCircleIcon />}>
+              Video başarıyla kaydedildi! • Süre: {formatTime(recordingTime)}
+            </Alert>
+          </Box>
+        )}
+
+        {/* ADIM 3: Model Bilgileri */}
+        {activeStep === 3 && (
+          <Box>
+            <Alert severity="info" sx={{ mb: 2 }}>
               3D model bilgilerini girin
-            </Typography>
+            </Alert>
 
             <TextField
               fullWidth
@@ -232,47 +543,107 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
           </Box>
         )}
 
-        {/* ADIM 3: Yükleniyor */}
-        {step === 3 && (
+        {/* ADIM 4: İşleniyor */}
+        {activeStep === 4 && (
           <Box sx={{ textAlign: 'center', py: 4 }}>
-            <CircularProgress size={60} sx={{ mb: 2 }} />
-            <Typography variant="h6">
+            <CircularProgress size={80} sx={{ mb: 3 }} />
+            <Typography variant="h5" gutterBottom>
               3D Model Oluşturuluyor...
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Lütfen bekleyin
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Video işleniyor ve 3D model oluşturuluyor. Bu işlem 1-3 dakika sürebilir.
+            </Typography>
+
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <strong>İşlem Adımları:</strong>
+              <br />
+              1. Video yükleniyor
+              <br />
+              2. Frame'ler çıkarılıyor
+              <br />
+              3. 3D model oluşturuluyor
+              <br />
+              4. Model kaydediliyor
+            </Alert>
+
+            <Typography variant="caption" color="text.secondary">
+              Lütfen sayfayı kapatmayın...
             </Typography>
           </Box>
         )}
       </DialogContent>
 
       <DialogActions>
-        {step === 1 && !capturedImage && (
+        {/* ADIM 0: Kamera Hazır */}
+        {activeStep === 0 && (
           <>
             <Button onClick={onClose}>İptal</Button>
             <Button 
               variant="contained" 
-              startIcon={<CameraAltIcon />}
-              onClick={capturePhoto}
+              startIcon={<FiberManualRecordIcon />}
+              onClick={startRecording}
+              disabled={!stream}
             >
-              Fotoğraf Çek
+              Kaydı Başlat
             </Button>
           </>
         )}
 
-        {step === 2 && (
+        {/* ADIM 1: Kayıt Devam Ediyor */}
+        {activeStep === 1 && (
+          <Button 
+            variant="contained" 
+            color="error"
+            startIcon={<StopIcon />}
+            onClick={stopRecording}
+          >
+            Kaydı Durdur
+          </Button>
+        )}
+
+        {/* ADIM 2: Video İnceleme */}
+        {activeStep === 2 && (
           <>
-            <Button onClick={retakePhoto}>Tekrar Çek</Button>
+            <Button onClick={retakeVideo} startIcon={<CameraAltIcon />}>
+              Tekrar Çek
+            </Button>
             <Button 
               variant="contained" 
               startIcon={<CheckCircleIcon />}
-              onClick={handleUpload}
+              onClick={approveVideo}
             >
-              Kaydet ve Yükle
+              Devam Et
             </Button>
           </>
         )}
+
+        {/* ADIM 3: Bilgi Girişi */}
+        {activeStep === 3 && (
+          <>
+            <Button onClick={retakeVideo}>Geri</Button>
+            <Button 
+              variant="contained" 
+              startIcon={<PlayArrowIcon />}
+              onClick={handleUpload}
+              disabled={!modelData.name}
+            >
+              3D Model Oluştur
+            </Button>
+          </>
+        )}
+
+        {/* ADIM 4: İşleniyor - Buton yok */}
       </DialogActions>
+
+      {/* CSS Animation */}
+      <style>
+        {`
+          @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+          }
+        `}
+      </style>
     </Dialog>
   );
 }

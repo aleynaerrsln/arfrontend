@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Container,
@@ -10,12 +10,23 @@ import {
   AppBar,
   Toolbar,
   IconButton,
-  Alert
+  Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Card,
+  CardContent,
+  CardActions,
+  Chip
 } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
+import ViewInArIcon from '@mui/icons-material/ViewInAr';
+import DeleteIcon from '@mui/icons-material/Delete';
 import { getRestaurantByName } from '../services/restaurantService';
 import ARScanner from '../components/panel/ARScanner';
+import ModelViewer3D from '../components/panel/ModelViewer3D';
 
 function PanelDashboard() {
   const { restaurant } = useParams();
@@ -26,13 +37,11 @@ function PanelDashboard() {
   const [error, setError] = useState('');
   const [models, setModels] = useState([]);
   const [arScannerOpen, setArScannerOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(null);
 
   // Restoran bilgilerini yükle
-  useEffect(() => {
-    loadRestaurantData();
-  }, [restaurant]);
-
-  const loadRestaurantData = async () => {
+  const loadRestaurantData = useCallback(async () => {
     try {
       setLoading(true);
       const response = await getRestaurantByName(restaurant);
@@ -43,7 +52,44 @@ function PanelDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [restaurant]);
+
+  // 3D Modelleri yükle
+  const loadModels = useCallback(async () => {
+    if (!restaurantData?._id) return;
+
+    try {
+      console.log('📦 Modeller yükleniyor...');
+      
+      // Backend'den modelleri çek
+      const response = await fetch(`http://172.20.10.2:5000/api/models/restaurant/${restaurantData._id}`);
+      
+      if (!response.ok) {
+        throw new Error('Modeller yüklenemedi');
+      }
+
+      const result = await response.json();
+      
+      console.log('✅ Modeller yüklendi:', result);
+      
+      setModels(result.data || []);
+      
+    } catch (err) {
+      console.error('❌ Model yükleme hatası:', err);
+      setError('Modeller yüklenirken hata oluştu');
+      setModels([]);
+    }
+  }, [restaurantData]);
+
+  useEffect(() => {
+    loadRestaurantData();
+  }, [restaurant]); // Sadece restaurant parametresi değişince çalış
+
+  useEffect(() => {
+    if (restaurantData?._id) {
+      loadModels();
+    }
+  }, [restaurantData?._id]); // Sadece restaurant ID değişince modelleri yükle
 
   // Çıkış yap
   const handleLogout = () => {
@@ -64,8 +110,48 @@ function PanelDashboard() {
 
   // Model eklendi
   const handleModelAdded = () => {
-    // TODO: Modelleri yeniden yükle
-    alert('Model eklendi! (Model listesi yakında güncellenecek)');
+    console.log('✅ Yeni model eklendi, liste güncelleniyor...');
+    loadModels(); // Backend'den yeniden yükle
+  };
+
+  // 3D Viewer aç
+  const handleOpenViewer = (model) => {
+    setSelectedModel(model);
+    setViewerOpen(true);
+  };
+
+  // 3D Viewer kapat
+  const handleCloseViewer = () => {
+    setViewerOpen(false);
+    setSelectedModel(null);
+  };
+
+  // Model sil
+  const handleDeleteModel = async (modelId) => {
+    if (!window.confirm('Bu modeli silmek istediğinize emin misiniz?')) {
+      return;
+    }
+
+    try {
+      console.log('🗑️ Model siliniyor:', modelId);
+      
+      const response = await fetch(`http://172.20.10.2:5000/api/models/${modelId}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Model silinemedi');
+      }
+
+      console.log('✅ Model silindi');
+      
+      // Listeyi güncelle
+      loadModels();
+      
+    } catch (err) {
+      console.error('❌ Model silme hatası:', err);
+      alert('Model silinirken hata oluştu: ' + err.message);
+    }
   };
 
   if (loading) {
@@ -131,9 +217,11 @@ function PanelDashboard() {
 
         {/* 3D Modeller Listesi */}
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h5" gutterBottom>
-            📦 3D Modellerim ({models.length})
-          </Typography>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Typography variant="h5">
+              📦 3D Modellerim ({models.length})
+            </Typography>
+          </Box>
           
           {models.length === 0 ? (
             <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -145,15 +233,68 @@ function PanelDashboard() {
               </Typography>
             </Box>
           ) : (
-            <Grid container spacing={2} sx={{ mt: 2 }}>
+            <Grid container spacing={3}>
               {models.map((model) => (
                 <Grid item xs={12} sm={6} md={4} key={model._id}>
-                  <Paper sx={{ p: 2 }}>
-                    <Typography variant="h6">{model.name}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {model.description}
-                    </Typography>
-                  </Paper>
+                  <Card 
+                    elevation={2}
+                    sx={{ 
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      '&:hover': {
+                        boxShadow: 6,
+                        transform: 'translateY(-4px)',
+                        transition: 'all 0.3s'
+                      }
+                    }}
+                  >
+                    <CardContent sx={{ flexGrow: 1 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                        <Typography variant="h6" component="div">
+                          {model.name}
+                        </Typography>
+                        <ViewInArIcon color="primary" />
+                      </Box>
+                      
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        {model.description}
+                      </Typography>
+                      
+                      {model.category && (
+                        <Chip 
+                          label={model.category} 
+                          size="small" 
+                          color="primary" 
+                          variant="outlined"
+                          sx={{ mb: 1 }}
+                        />
+                      )}
+                      
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                        📅 {new Date(model.createdAt).toLocaleDateString('tr-TR')}
+                      </Typography>
+                    </CardContent>
+                    
+                    <CardActions sx={{ justifyContent: 'space-between', px: 2, pb: 2 }}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<ViewInArIcon />}
+                        onClick={() => handleOpenViewer(model)}
+                      >
+                        Görüntüle
+                      </Button>
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => handleDeleteModel(model._id)}
+                        title="Sil"
+                      >
+                        <DeleteIcon />
+                      </IconButton>
+                    </CardActions>
+                  </Card>
                 </Grid>
               ))}
             </Grid>
@@ -168,6 +309,36 @@ function PanelDashboard() {
         restaurantId={restaurantData?._id}
         onModelAdded={handleModelAdded}
       />
+
+      {/* 3D Model Viewer Dialog */}
+      <Dialog 
+        open={viewerOpen} 
+        onClose={handleCloseViewer}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">
+              🎨 {selectedModel?.name}
+            </Typography>
+            <Chip label="3D Model" color="primary" size="small" />
+          </Box>
+        </DialogTitle>
+        
+        <DialogContent sx={{ p: 3 }}>
+          {selectedModel && (
+            <ModelViewer3D 
+              modelUrl={`http://172.20.10.2:5000${selectedModel.modelUrl}`}
+              title={selectedModel.description}
+            />
+          )}
+        </DialogContent>
+        
+        <DialogActions>
+          <Button onClick={handleCloseViewer}>Kapat</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
