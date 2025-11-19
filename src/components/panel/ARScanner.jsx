@@ -56,73 +56,94 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
   });
 
   // Kamera başlat
-  const startCamera = async () => {
-    setCameraLoading(true);
-    setError('');
-    
-    try {
-      // Tarayıcı desteği kontrolü
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('BROWSER_NOT_SUPPORTED');
-      }
-
-      // Kamera izni iste
-      console.log('🎥 Kamera izni isteniyor...');
-      
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment', // Arka kamera
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      });
-
-      console.log('✅ Kamera izni alındı');
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        
-        // Video'yu başlat
-        try {
-          await videoRef.current.play();
-          console.log('✅ Video stream başladı');
-        } catch (playError) {
-          console.error('Video play error:', playError);
-          // Tekrar dene
-          setTimeout(() => {
-            if (videoRef.current) {
-              videoRef.current.play();
-            }
-          }, 100);
-        }
-      }
-
-      setStream(mediaStream);
-      setCameraPermission('granted');
-      setError('');
-      setActiveStep(0);
-      
-    } catch (err) {
-      setCameraPermission('denied');
-      console.error('Kamera hatası:', err);
-      
-      if (err.message === 'BROWSER_NOT_SUPPORTED') {
-        setError('Tarayıcınız kamera kullanımını desteklemiyor. Lütfen güncel Chrome kullanın.');
-      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setError('Kamera erişimi reddedildi. Lütfen tarayıcı adres çubuğundaki kamera simgesine tıklayıp izin verin.');
-      } else if (err.name === 'NotFoundError') {
-        setError('Kamera bulunamadı. Lütfen cihazınızda kamera olduğundan emin olun.');
-      } else if (err.name === 'NotReadableError') {
-        setError('Kamera kullanımda. Lütfen diğer sekmeleri/uygulamaları kapatın.');
-      } else {
-        setError('Kamera başlatılamadı: ' + err.message);
-      }
-    } finally {
-      setCameraLoading(false);
+const startCamera = async () => {
+  setCameraLoading(true);
+  setError('');
+  
+  try {
+    // HTTPS kontrolü ekle
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+      throw new Error('HTTPS_REQUIRED');
     }
-  };
+    
+    // Tarayıcı desteği kontrolü - daha detaylı
+    if (!navigator.mediaDevices) {
+      console.error('navigator.mediaDevices mevcut değil');
+      throw new Error('BROWSER_NOT_SUPPORTED');
+    }
+    
+    if (!navigator.mediaDevices.getUserMedia) {
+      console.error('getUserMedia fonksiyonu mevcut değil');
+      throw new Error('BROWSER_NOT_SUPPORTED');
+    }
 
+    // Kamera izni iste
+    console.log('🎥 Kamera izni isteniyor...');
+    
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+
+    console.log('✅ Kamera izni alındı');
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = mediaStream;
+      
+      // Video elementinin muted olduğundan emin ol (autoplay için gerekli)
+      videoRef.current.muted = true;
+      videoRef.current.playsInline = true; // iOS için önemli
+      
+      try {
+        await videoRef.current.play();
+        console.log('✅ Video stream başladı');
+      } catch (playError) {
+        console.error('Video play error:', playError);
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.play();
+          }
+        }, 100);
+      }
+    }
+
+    setStream(mediaStream);
+    setCameraPermission('granted');
+    setError('');
+    setActiveStep(0);
+    
+  } catch (err) {
+    setCameraPermission('denied');
+    console.error('Kamera hatası detayı:', {
+      name: err.name,
+      message: err.message,
+      stack: err.stack
+    });
+    
+    // Hata mesajlarını güncelle
+    if (err.message === 'HTTPS_REQUIRED') {
+      setError('Kamera erişimi için HTTPS bağlantısı gerekiyor. Lütfen güvenli bağlantı kullanın.');
+    } else if (err.message === 'BROWSER_NOT_SUPPORTED') {
+      setError('Tarayıcınız kamera kullanımını desteklemiyor. Lütfen güncel Chrome, Firefox veya Safari kullanın.');
+    } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      setError('Kamera erişimi reddedildi. Lütfen tarayıcı ayarlarından kamera iznini kontrol edin.');
+    } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      setError('Kamera bulunamadı. Lütfen cihazınızda kamera olduğundan emin olun.');
+    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      setError('Kamera başka bir uygulama tarafından kullanılıyor olabilir.');
+    } else if (err.name === 'OverconstrainedError') {
+      setError('İstenen kamera özellikleri desteklenmiyor.');
+    } else {
+      setError(`Kamera başlatılamadı: ${err.name || err.message}`);
+    }
+  } finally {
+    setCameraLoading(false);
+  }
+};
   // Kamera durdur
   const stopCamera = () => {
     if (stream) {
@@ -257,7 +278,7 @@ function ARScanner({ open, onClose, restaurantId, onModelAdded }) {
       console.log('📤 Video backend\'e gönderiliyor...');
 
       // Backend'e gönder - GERÇEK API ÇAĞRISI
-      const response = await fetch('http://172.20.10.2:5000/api/models/from-video', {
+      const response = await fetch('http://192.168.1.4:5000/api/models/from-video', {
         method: 'POST',
         body: formData,
         // Content-Type otomatik olarak multipart/form-data olur

@@ -3,7 +3,10 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
-
+// arfrontend/src/index.js başına ekleyin
+if (typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ === 'object') {
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__.inject = function() {};
+}
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>

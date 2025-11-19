@@ -62,7 +62,7 @@ function PanelDashboard() {
       console.log('📦 Modeller yükleniyor...');
       
       // Backend'den modelleri çek
-      const response = await fetch(`http://172.20.10.2:5000/api/models/restaurant/${restaurantData._id}`);
+      const response = await fetch(`http://192.168.1.4:5000/api/models/restaurant/${restaurantData._id}`);
       
       if (!response.ok) {
         throw new Error('Modeller yüklenemedi');
@@ -135,7 +135,7 @@ function PanelDashboard() {
     try {
       console.log('🗑️ Model siliniyor:', modelId);
       
-      const response = await fetch(`http://172.20.10.2:5000/api/models/${modelId}`, {
+      const response = await fetch(`http://192.168.1.4:5000/api/models/${modelId}`, {
         method: 'DELETE'
       });
 
@@ -329,7 +329,7 @@ function PanelDashboard() {
         <DialogContent sx={{ p: 3 }}>
           {selectedModel && (
             <ModelViewer3D 
-              modelUrl={`http://172.20.10.2:5000${selectedModel.modelUrl}`}
+              modelUrl={`http://192.168.1.4:5000${selectedModel.modelUrl}`}
               title={selectedModel.description}
             />
           )}
